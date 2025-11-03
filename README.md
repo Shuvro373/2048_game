@@ -1,206 +1,171 @@
-# Getting Started with 2048
+# 🎮 DevSecOps: Deploying the 2048 Game on Docker and Kubernetes with Jenkins CI/CD
 
-This game (2048) was built using **React** and **TypeScript**. The unique part of this example is animations. The animations in React aren't that straightforward, so I hope you can learn something new from it.
+![DevSecOps Banner](https://miro.medium.com/v2/resize:fit:1200/1*eNpn8LoI8KJ9az3dbmqltA.png)
 
+---
 
-## Available Scripts
+## 📘 Project Overview
 
-In the project directory, you can run:
+This project demonstrates a **complete DevSecOps pipeline** for the **2048 Game** — a popular puzzle web application.  
+It integrates **Jenkins CI/CD**, **SonarQube**, **OWASP Dependency-Check**, **Trivy**, **Docker**, **Kubernetes**, and **Prometheus–Grafana** monitoring, all deployed on **AWS EC2 instances**.
 
-### `yarn start`
+The pipeline automatically:
+- Analyzes code quality  
+- Detects vulnerabilities  
+- Builds and scans Docker images  
+- Deploys securely to Kubernetes  
+- Monitors infrastructure and pods using Prometheus and Grafana  
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in the browser.
+---
 
-The page will reload if you make edits.\
-You will also see any lint errors in the console.
+## 🧩 Tech Stack
 
-### `yarn build`
+| Category | Tools & Technologies |
+|-----------|----------------------|
+| **Version Control** | Git & GitHub |
+| **CI/CD Orchestration** | Jenkins |
+| **Code Quality Analysis** | SonarQube |
+| **Dependency Security** | OWASP Dependency-Check |
+| **Container Security** | Trivy |
+| **Containerization** | Docker |
+| **Orchestration & Deployment** | Kubernetes (kubeadm setup) |
+| **Monitoring & Visualization** | Prometheus + Grafana |
+| **Cloud Infrastructure** | AWS EC2 (Ubuntu 24.04 LTS) |
+| **Programming Language** | Node.js / Python |
+| **Web Server** | NGINX |
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+---
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+## ⚙️ Pipeline Workflow
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+1. **Clean Workspace** → Clears previous build files.  
+2. **Checkout Code** → Pulls the latest code from GitHub.  
+3. **SonarQube Analysis** → Scans for code smells, bugs, and vulnerabilities.  
+4. **Install Dependencies** → Installs NPM dependencies for the 2048 app.  
+5. **OWASP Dependency Check** → Detects known vulnerable libraries.  
+6. **Trivy Filesystem Scan** → Scans the local filesystem for HIGH/CRITICAL CVEs.  
+7. **Docker Build & Push** → Builds image and pushes it to Docker Hub.  
+8. **Trivy Image Scan** → Scans the built Docker image.  
+9. **Deploy to Container** → Runs the app locally in a Docker container.  
+10. **Deploy to Kubernetes** → Deploys the containerized app to K8s using YAML manifests.  
 
-## Learn More
+---
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+## 📜 Complete Jenkins Declarative Pipeline
 
-To learn React, check out the [React documentation](https://reactjs.org/).
-# 2048-React-CICD
-#k8s_worker_node.sh
-#!/bin/bash
-set -e
+```groovy
+pipeline {
+    agent any
 
-# Set hostname
-sudo hostnamectl set-hostname K8s-Worker
+    tools {
+        jdk 'jdk21'
+        nodejs 'nodejs24'
+    }
 
-# Disable swap
-sudo swapoff -a
-sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+    }
 
-# Load required modules
-cat <<EOF | sudo tee /etc/modules-load.d/containerd.conf
-overlay
-br_netfilter
-EOF
+    stages {
+        stage('Clean Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
 
-sudo modprobe overlay
-sudo modprobe br_netfilter
+        stage('Checkout from Git') {
+            steps {
+                git 'https://github.com/Shuvro-373/2048_game.git'
+            }
+        }
 
-# Set system parameters for Kubernetes networking
-cat <<EOT | sudo tee /etc/sysctl.d/kubernetes.conf
-net.bridge.bridge-nf-call-ip6tables = 1
-net.bridge.bridge-nf-call-iptables = 1
-net.ipv4.ip_forward = 1
-EOT
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonar-server') {
+                    sh '''$SCANNER_HOME/bin/sonar-scanner \
+                        -Dsonar.projectKey=Game \
+                        -Dsonar.projectName=Game'''
+                }
+            }
+        }
 
-sudo sysctl --system
+        stage('Install Dependencies') {
+            steps {
+                sh 'npm install'
+            }
+        }
 
-# Install containerd
-sudo apt update
-sudo apt install -y curl gnupg2 software-properties-common apt-transport-https ca-certificates
+        stage('OWASP Dependency-Check') {
+            steps {
+                dependencyCheck additionalArguments: '--scan . --format XML', odcInstallation: 'DP-Check'
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                archiveArtifacts artifacts: '**/dependency-check-report.*', onlyIfSuccessful: true
+            }
+        }
 
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/docker.gpg
-sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
-sudo apt update
-sudo apt install -y containerd.io
+        stage('Trivy Filesystem Scan') {
+            steps {
+                sh '''
+                    trivy fs . \
+                    --format table \
+                    --severity HIGH,CRITICAL \
+                    --no-progress > trivyfs.txt
+                '''
+                archiveArtifacts artifacts: 'trivyfs.txt', onlyIfSuccessful: true
+            }
+        }
 
-# Configure containerd to use systemd cgroup
-sudo containerd config default | sudo tee /etc/containerd/config.toml >/dev/null 2>&1
-sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
-sudo systemctl restart containerd
-sudo systemctl enable containerd
+        stage("Docker Build & Push") {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'dockerhub-creds') {
+                        sh '''
+                            docker build -t 2048 .
+                            docker tag 2048 shuvro373/2048:latest
+                            docker push shuvro373/2048:latest
+                        '''
+                    }
+                }
+            }
+        }
 
-# Add Kubernetes repository
-sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+        stage("Trivy Image Scan") {
+            steps {
+                sh '''
+                    trivy image shuvro373/2048:latest \
+                    --severity HIGH,CRITICAL \
+                    --format table \
+                    --no-progress > trivy.txt
+                '''
+                archiveArtifacts artifacts: 'trivy.txt', onlyIfSuccessful: true
+            }
+        }
 
-# Install Kubernetes components
-sudo apt update
-sudo apt install -y kubelet kubeadm kubectl
-sudo apt-mark hold kubelet kubeadm kubectl
-ubuntu@K8s-Worker:~$ sudo nano worker.sh 
-ubuntu@K8s-Worker:~$ sudo vim worker.sh 
-ubuntu@K8s-Worker:~$ cat worker.sh 
-#!/bin/bash
-set -e
+        stage('Deploy to container') {
+            steps {
+                sh '''
+                    docker rm -f 2048 || true
+                    docker run -d --name 2048 -p 3000:3000 shuvro373/2048:latest
+                '''
+            }
+        }
 
-# Set hostname
-sudo hostnamectl set-hostname K8s-Worker
-
-# Disable swap
-sudo swapoff -a
-sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
-
-# Load required modules
-cat <<EOF | sudo tee /etc/modules-load.d/containerd.conf
-overlay
-br_netfilter
-EOF
-
-sudo modprobe overlay
-sudo modprobe br_netfilter
-
-# Set system parameters for Kubernetes networking
-cat <<EOT | sudo tee /etc/sysctl.d/kubernetes.conf
-net.bridge.bridge-nf-call-ip6tables = 1
-net.bridge.bridge-nf-call-iptables = 1
-net.ipv4.ip_forward = 1
-EOT
-
-sudo sysctl --system
-
-# Install containerd
-sudo apt update
-sudo apt install -y curl gnupg2 software-properties-common apt-transport-https ca-certificates
-
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/docker.gpg
-sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
-sudo apt update
-sudo apt install -y containerd.io
-
-# Configure containerd to use systemd cgroup
-sudo containerd config default | sudo tee /etc/containerd/config.toml >/dev/null 2>&1
-sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
-sudo systemctl restart containerd
-sudo systemctl enable containerd
-
-# Add Kubernetes repository
-sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
-
-# Install Kubernetes components
-sudo apt updat:e
-sudo apt install -y kubelet kubeadm kubectl
-sudo apt-mark hold kubelet kubeadm kubectl
-#k8s_master_node.sh
-#!/bin/bash
-set -e
-
-# Set hostname
-sudo hostnamectl set-hostname K8s-Master
-
-# Disable swap
-sudo swapoff -a
-sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
-
-# Load kernel modules
-cat <<EOF | sudo tee /etc/modules-load.d/containerd.conf
-overlay
-br_netfilter
-EOF
-
-sudo modprobe overlay
-sudo modprobe br_netfilter
-
-# Set sysctl params
-cat <<EOT | sudo tee /etc/sysctl.d/kubernetes.conf
-net.bridge.bridge-nf-call-ip6tables = 1
-net.bridge.bridge-nf-call-iptables = 1
-net.ipv4.ip_forward = 1
-EOT
-
-sudo sysctl --system
-
-# Install dependencies
-sudo apt update
-sudo apt install -y curl gnupg2 software-properties-common apt-transport-https ca-certificates
-
-# Add Docker repo and install containerd
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/docker.gpg
-sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
-sudo apt update
-sudo apt install -y containerd.io
-
-# Configure containerd
-sudo containerd config default | sudo tee /etc/containerd/config.toml >/dev/null 2>&1
-sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
-sudo systemctl restart containerd
-sudo systemctl enable containerd
-
-# Add Kubernetes repo
-sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
-
-# Install Kubernetes tools
-sudo apt update
-sudo apt install -y kubelet kubeadm kubectl
-sudo apt-mark hold kubelet kubeadm kubectl
-
-# Initialize the master node
-sudo kubeadm init --ignore-preflight-errors=all
-
-# Set up kubeconfig for kubectl
-mkdir -p $HOME/.kube
-sudo cp /etc/kubernetes/admin.conf $HOME/.kube/config
-sudo chown $(id -u):$(id -g) $HOME/.kube/config
-
-# Install Calico network plugin
-kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.0/manifests/calico.yaml
+        stage('Deploy to kubernets'){
+            steps{
+                script{
+                    withKubeConfig(
+                        caCertificate: '', 
+                        clusterName: '', 
+                        contextName: '', 
+                        credentialsId: 'k8s', 
+                        namespace: '', 
+                        restrictKubeConfigAccess: false, 
+                        serverUrl: ''
+                    ) {
+                        sh 'kubectl apply -f deployment.yaml'
+                    }
+                }
+            }
+        }
+    }
+}
